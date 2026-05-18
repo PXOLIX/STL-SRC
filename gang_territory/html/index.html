@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="th">
+<head>
+    <meta charset="utf-8" />
+    <title>Gang Territory</title>
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+    <div id="root" class="hidden">
+        <!-- LEADERBOARD VIEW -->
+        <section id="view-leaderboard" class="view hidden">
+            <header class="topbar">
+                <h1>GANG TERRITORY</h1>
+                <button class="close" data-close="leaderboard">×</button>
+            </header>
+            <div class="content">
+                <div class="board">
+                    <h2>Standings</h2>
+                    <ul id="standings"></ul>
+                </div>
+                <div class="recent">
+                    <h2>Recent Captures</h2>
+                    <ul id="recent"></ul>
+                </div>
+            </div>
+            <footer class="hint">Press <kbd>F7</kbd> to close</footer>
+        </section>
+
+        <!-- EDITOR VIEW -->
+        <section id="view-editor" class="view hidden">
+            <header class="topbar">
+                <h1>SPRAY POINT EDITOR</h1>
+                <button class="close" data-close="editor">×</button>
+            </header>
+            <div class="editor-grid">
+                <aside class="sidebar">
+                    <div class="actions">
+                        <button id="btn-create">+ Point at me</button>
+                        <button id="btn-cancel-link" class="hidden">Cancel link</button>
+                    </div>
+
+                    <h3>Zones</h3>
+                    <ul id="zones"></ul>
+                    <form id="zone-form" class="form">
+                        <input name="name" placeholder="new zone name" required />
+                        <button type="submit">+ Zone</button>
+                    </form>
+
+                    <h3>Gangs</h3>
+                    <ul id="gangs"></ul>
+                    <h3>Add / Update gang</h3>
+                    <form id="gang-form" class="form">
+                        <input name="job"   placeholder="job name (e.g. ballas)" required />
+                        <input name="label" placeholder="display label"          required />
+                        <input name="color" placeholder="#A020F0"                value="#FFFFFF" />
+                        <input name="blip"  placeholder="blip color id"          value="1" type="number" />
+                        <button type="submit">Save Gang</button>
+                    </form>
+                </aside>
+                <main class="points-panel">
+                    <div class="filterbar">
+                        <input id="filter" placeholder="filter by id / owner..." />
+                        <span id="link-mode" class="link-mode hidden">Click target to link →</span>
+                    </div>
+                    <table class="points-table">
+                        <thead>
+                            <tr><th>ID</th><th>Pos</th><th>Owner</th><th>Zone</th><th>Neighbors</th><th></th></tr>
+                        </thead>
+                        <tbody id="points-body"></tbody>
+                    </table>
+                </main>
+            </div>
+            <footer class="hint">Press <kbd>F6</kbd> to close</footer>
+        </section>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
