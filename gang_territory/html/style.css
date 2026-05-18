@@ -1,0 +1,298 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    color: #e8e8e8;
+    font-family: 'Segoe UI', 'Sarabun', sans-serif;
+    overflow: hidden;
+}
+
+.hidden { display: none !important; }
+
+#root {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.view {
+    width: 1100px;
+    max-width: 92vw;
+    height: 78vh;
+    background: rgba(15, 17, 21, 0.95);
+    border: 1px solid #2b2f3a;
+    border-radius: 12px;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 22px;
+    background: linear-gradient(90deg, #1f2530, #11141a);
+    border-bottom: 1px solid #2b2f3a;
+}
+
+.topbar h1 {
+    font-size: 16px;
+    letter-spacing: 3px;
+    color: #ffd166;
+}
+
+.close {
+    background: transparent;
+    color: #aaa;
+    font-size: 22px;
+    border: 0;
+    cursor: pointer;
+}
+.close:hover { color: #fff; }
+
+.hint {
+    padding: 8px 22px;
+    font-size: 11px;
+    color: #6a6e7a;
+    text-align: right;
+    border-top: 1px solid #1c1f27;
+}
+.hint kbd {
+    background: #2a2f3a;
+    border: 1px solid #3a4150;
+    padding: 1px 6px;
+    border-radius: 4px;
+    color: #ddd;
+}
+
+/* ===================== Leaderboard ===================== */
+
+#view-leaderboard .content {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+    gap: 16px;
+    padding: 18px;
+    overflow: hidden;
+}
+
+.board h2, .recent h2 {
+    font-size: 12px;
+    letter-spacing: 2px;
+    color: #888;
+    margin-bottom: 8px;
+}
+
+#standings, #recent {
+    list-style: none;
+    overflow: auto;
+    max-height: 100%;
+}
+
+#standings li {
+    background: #161a22;
+    border: 1px solid #232936;
+    border-left: 4px solid #444;
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+    display: grid;
+    grid-template-columns: 30px 1fr 70px 80px;
+    align-items: center;
+    gap: 12px;
+}
+
+#standings li .rank { color: #ffd166; font-weight: bold; }
+#standings li .name { font-weight: 600; }
+#standings li .pct { text-align: right; color: #9ee37d; font-variant-numeric: tabular-nums; }
+#standings li .pts { text-align: right; color: #aaa; font-size: 12px; }
+
+#standings li .bar {
+    grid-column: 1 / -1;
+    height: 4px;
+    background: #1c2029;
+    border-radius: 2px;
+    margin-top: 8px;
+    overflow: hidden;
+}
+#standings li .bar > span { display: block; height: 100%; }
+
+#recent li {
+    background: #161a22;
+    border: 1px solid #232936;
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    display: flex;
+    justify-content: space-between;
+}
+#recent li .swatch {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    margin-right: 6px;
+}
+
+/* ===================== Editor ===================== */
+
+.editor-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 0;
+    overflow: hidden;
+}
+
+.sidebar {
+    padding: 18px;
+    background: #11141a;
+    border-right: 1px solid #232936;
+    overflow: auto;
+}
+
+.sidebar h3 {
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: #888;
+    margin: 16px 0 8px;
+}
+
+.actions button, .form button {
+    background: #2a3142;
+    border: 1px solid #3a4256;
+    color: #fff;
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    margin-right: 6px;
+    margin-bottom: 6px;
+    font-size: 12px;
+}
+.actions button:hover, .form button:hover { background: #364056; }
+
+.form { display: grid; gap: 6px; }
+.form input {
+    background: #1a1e27;
+    border: 1px solid #2a3142;
+    color: #fff;
+    padding: 7px 10px;
+    border-radius: 5px;
+    font-size: 12px;
+}
+
+#gangs { list-style: none; }
+#gangs li {
+    background: #1a1e27;
+    border: 1px solid #232936;
+    border-left: 4px solid #444;
+    border-radius: 5px;
+    padding: 8px 10px;
+    margin-bottom: 4px;
+    font-size: 12px;
+    display: flex;
+    justify-content: space-between;
+}
+#gangs li button {
+    background: transparent; color: #ffd166; border: 0; cursor: pointer; font-size: 11px;
+}
+
+.points-panel { padding: 18px; overflow: hidden; display: flex; flex-direction: column; }
+
+.filterbar {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+    align-items: center;
+}
+.filterbar input {
+    flex: 1;
+    background: #1a1e27;
+    border: 1px solid #2a3142;
+    color: #fff;
+    padding: 7px 10px;
+    border-radius: 5px;
+}
+.link-mode { color: #ffd166; font-size: 12px; }
+
+.points-table {
+    width: 100%;
+    border-collapse: collapse;
+    overflow: auto;
+    display: block;
+    flex: 1;
+}
+.points-table thead {
+    position: sticky;
+    top: 0;
+    background: #161a22;
+}
+.points-table th, .points-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #1c2029;
+    font-size: 12px;
+    text-align: left;
+}
+.points-table tr:hover td { background: #161a22; }
+.points-table .swatch {
+    display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px;
+}
+.row-actions button {
+    background: transparent;
+    color: #9ee37d;
+    border: 0;
+    cursor: pointer;
+    font-size: 11px;
+    margin-right: 6px;
+}
+.row-actions button.danger { color: #ff7a7a; }
+
+/* ===================== Zones ===================== */
+
+#zones { list-style: none; margin-bottom: 8px; }
+.zone-row {
+    background: #1a1e27;
+    border: 1px solid #232936;
+    border-left: 4px solid #ffa500;
+    border-radius: 5px;
+    padding: 8px 10px;
+    margin-bottom: 4px;
+    font-size: 12px;
+}
+.zone-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+.zone-dims { color: #888; font-size: 11px; }
+.zone-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.zone-actions button {
+    background: #2a3142;
+    border: 1px solid #3a4256;
+    color: #fff;
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+}
+.zone-actions button.danger { background: #4a1f1f; border-color: #6a2828; color: #ff9999; }
+.zone-actions button:hover { background: #364056; }
+
+/* selects in points table */
+.hq-select, .zone-select {
+    background: #1a1e27;
+    border: 1px solid #2a3142;
+    color: #fff;
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-size: 11px;
+    margin-left: 4px;
+    max-width: 110px;
+}
