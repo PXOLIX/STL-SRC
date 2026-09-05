@@ -1098,6 +1098,425 @@ $p.ProcessorAffinity = 0xFFFF
 > ถ้าเจอกำแพงที่ 800–900 คนแล้วแก้ไม่ตก ทางเลือกจริงจังคือ **แยกเซิร์ฟเป็นหลาย instance (shard)**
 > เพราะ FXServer 1 instance ไม่สามารถขยายไปใช้หลายคอร์ได้
 
+### 4.10 ย้าย MariaDB จาก i9 → i5 (ทีละขั้น)
+
+#### ขั้นที่ 0 — ตัดสินใจก่อน (ห้ามข้าม)
+
+เครื่อง i9 อยู่ **PTNK** เครื่อง i5 อยู่ **ReadyIDC** = คนละ DC
+ทุก query จะต้องวิ่งข้าม DC ไป-กลับ **ทุกครั้ง** ดังนั้นต้องวัดก่อนว่าคุ้มไหม
+
+```powershell
+# รันบนเครื่อง i9
+ping -n 100 <IP_เครื่อง_i5>
+# ดูค่า Average และดูว่ามี loss ไหม
+```
+
+```bash
+# ละเอียดกว่า — รันบน i5 ยิงไป i9
+mtr -rwzc 200 <IP_เครื่อง_i9>
+```
+
+| ping i9 ↔ i5 | ตัดสินใจ |
+|---|---|
+| **< 1 ms** | ✅ ย้ายได้เลย |
+| **1–3 ms** | ✅ ย้ายได้ ถ้าสคริปต์ไม่ยิง query ซ้ำซ้อน (N+1) |
+| **3–10 ms** | ⚠️ ย้ายเฉพาะเมื่อพิสูจน์แล้วว่า CPU/ดิสก์ของ i9 เป็นคอขวดจริง — และต้อง optimize query ก่อน |
+| **> 10 ms หรือมี packet loss** | ❌ **อย่าย้าย** — เก็บ DB ไว้บน i9 แล้วไปแก้ที่อื่นแทน |
+
+**ทำไมต้องซีเรียสขนาดนี้:** query บนเครื่องเดียวกันใช้เวลาไป-กลับ ~0.2–0.5 ms
+ถ้าข้าม DC ที่ 3 ms = **ทุก query ช้าลงราว 10 เท่า** สคริปต์ที่ยิง 5 query ต่อการกระทำ 1 ครั้ง
+จะจาก ~2 ms กลายเป็น ~17 ms — ผู้เล่นเริ่มรู้สึกได้
+
+**วัดปริมาณ query จริงก่อน** (รันบน DB ปัจจุบัน):
+
+```sql
+SHOW GLOBAL STATUS LIKE 'Questions';
+-- รอ 60 วินาที แล้วรันซ้ำ → (ค่าใหม่ - ค่าเก่า) / 60 = queries/sec
+```
+
+แล้วคำนวณจำนวน connection ที่ต้องใช้ (กฎของ Little):
+
+```
+connection ที่ต้องมี ≈ queries/sec × เวลาต่อ query (วินาที)
+
+ตัวอย่าง: 300 QPS × 0.0035 วิ (3.5 ms) ≈ 1.05
+→ ตั้ง connectionLimit = 16 ก็เหลือเฟือแล้ว
+```
+
+**ได้อะไร / เสียอะไร**
+
+| ✅ ได้ | ❌ เสีย |
+|---|---|
+| i9 ไม่ต้องแบ่ง CPU + ดิสก์ IO ให้ DB → tick time นิ่งขึ้น | ทุก query บวก latency ข้าม DC |
+| ปลดพื้นที่บน M.2 250 GB ที่ตึงอยู่แล้ว | i5 ล่ม = ทั้งเซิร์ฟล่ม (จุดพึ่งพาเพิ่ม) |
+| i5 มี NVMe 1 TB — เหมาะกับ DB มากกว่า | ต้องตั้งระบบสำรองข้อมูลใหม่ |
+| แยก backup / restore ได้โดยไม่แตะเครื่องเกม | ต้องดูแลอีกเครื่อง |
+
+> 🔴 **ห้ามเปิดพอร์ต 3306 ออกอินเทอร์เน็ตเด็ดขาด** ไม่ว่ากรณีใด — ต้องผ่าน WireGuard เท่านั้น (ขั้นที่ 2)
+
+---
+
+#### ขั้นที่ 1 — ติดตั้ง MariaDB บน i5
+
+**ถ้า i5 เป็น Linux (แนะนำ):**
+
+```bash
+sudo apt update
+sudo apt -y install mariadb-server mariadb-client
+mariadb --version
+
+sudo mariadb-secure-installation
+#   Set root password?          → Y (ตั้งรหัสยาว ๆ)
+#   Remove anonymous users?     → Y
+#   Disallow root login remotely? → Y
+#   Remove test database?       → Y
+#   Reload privilege tables?    → Y
+```
+
+**ถ้า i5 เป็น Windows:**
+โหลด MariaDB Server จาก mariadb.org → ติดตั้งแบบ Service → ตั้ง root password
+ไฟล์คอนฟิกอยู่ที่ `C:\Program Files\MariaDB 11.4\data\my.ini` (เนื้อหาส่วน `[mysqld]` ใช้เหมือนกัน)
+ส่วนคำสั่ง `systemctl` ให้เปลี่ยนเป็น `net stop MariaDB` / `net start MariaDB`
+
+> ให้ **เวอร์ชันบน i5 เท่ากับหรือใหม่กว่า** เวอร์ชันที่ใช้อยู่บน i9 (เช็คด้วย `SELECT VERSION();`)
+> ถ้าใหม่กว่ามาก ๆ (ข้าม 2 major) ให้ทดสอบ import บนสำเนาก่อน
+
+---
+
+#### ขั้นที่ 2 — WireGuard ระหว่าง i9 ↔ i5
+
+โปรโตคอล MySQL ส่งข้อมูลแบบไม่เข้ารหัสโดยดีฟอลต์ — **ห้ามวิ่งบนอินเทอร์เน็ตเปลือย ๆ**
+
+ใช้ผังเดิมจากข้อ 2.2 แล้วเพิ่มเครื่อง i5 เป็น `10.66.0.3`
+(i9 กับ i5 มี public IP ทั้งคู่ → ต่อตรงหากันได้เลย ไม่ต้องอ้อมผ่าน VPS)
+
+**บน i5 (Linux)** — `/etc/wireguard/wg0.conf`:
+
+```ini
+[Interface]
+Address    = 10.66.0.3/24
+ListenPort = 51820
+PrivateKey = <I5_PRIVATE_KEY>
+
+[Peer]
+# FXServer (Windows i9)
+PublicKey  = <WINDOWS_PUBLIC_KEY>
+Endpoint   = <IP_สาธารณะ_i9>:51820
+AllowedIPs = 10.66.0.2/32
+PersistentKeepalive = 25
+```
+
+```bash
+sudo ufw allow 51820/udp
+sudo systemctl enable --now wg-quick@wg0
+```
+
+**บน i9 (Windows)** — เพิ่ม `[Peer]` บล็อกที่สองในทันเนลเดิม (ไม่ต้องสร้างทันเนลใหม่):
+
+```ini
+[Peer]
+# MariaDB (i5)
+PublicKey  = <I5_PUBLIC_KEY>
+Endpoint   = <IP_สาธารณะ_i5>:51820
+AllowedIPs = 10.66.0.3/32
+PersistentKeepalive = 25
+```
+
+ทดสอบ: จาก i9 รัน `ping 10.66.0.3` → ต้องตอบ
+แล้ววัด latency ผ่านทันเนลอีกรอบ (WireGuard บวกอีกราว 0.1–0.3 ms)
+
+---
+
+#### ขั้นที่ 3 — คอนฟิก MariaDB บน i5
+
+`/etc/mysql/mariadb.conf.d/60-fivem.cnf`:
+
+```ini
+[mysqld]
+# ── เครือข่าย ──────────────────────────────────
+# ฟังเฉพาะ IP ฝั่ง WireGuard เท่านั้น (อินเทอร์เน็ตเข้าไม่ถึง)
+bind-address    = 10.66.0.3
+
+# ⚠️ สำคัญมากสำหรับ DB ที่อยู่คนละเครื่อง
+# ปิด reverse DNS lookup ตอน client เชื่อมต่อ — ไม่ปิดจะค้างหลายวินาทีต่อ connection
+skip-name-resolve
+
+max_connections     = 200
+thread_cache_size   = 64
+wait_timeout        = 600
+interactive_timeout = 600
+
+# ── InnoDB ─────────────────────────────────────
+# i5 มี RAM 16 GB และยังต้องรันงานเสียงด้วย → 8G คือจุดที่ปลอดภัย
+# ถ้าฐานข้อมูลเล็กกว่านี้ ให้ตั้งเท่ากับ (ขนาด DB × 1.2) ก็พอ
+innodb_buffer_pool_size      = 8G
+innodb_buffer_pool_instances = 8
+innodb_log_file_size         = 1G
+innodb_flush_method          = O_DIRECT
+
+# ⚠️ trade-off: ค่า 2 เร็วกว่ามาก แต่ถ้าไฟดับกะทันหันอาจเสีย transaction ≤ 1 วินาที
+#    เซิร์ฟ FiveM ส่วนใหญ่ยอมรับได้ — ถ้ารับไม่ได้ (ระบบเงิน/ธนาคาร) ให้ใช้ 1
+innodb_flush_log_at_trx_commit = 2
+
+# NVMe — ค่าดีฟอลต์ตั้งไว้สำหรับ HDD ซึ่งต่ำเกินไปมาก
+innodb_io_capacity      = 4000
+innodb_io_capacity_max  = 10000
+innodb_read_io_threads  = 8
+innodb_write_io_threads = 8
+
+# ── Slow query log — ไว้ตามหาสคริปต์ที่ถล่ม DB ──
+slow_query_log      = 1
+slow_query_log_file = /var/log/mysql/slow.log
+long_query_time     = 0.15
+log_queries_not_using_indexes = 1
+
+# ── Charset ────────────────────────────────────
+character-set-server = utf8mb4
+collation-server     = utf8mb4_unicode_ci
+```
+
+> ⚠️ **ปัญหาที่เจอบ่อย:** MariaDB สตาร์ตก่อน WireGuard ตอนบูต → bind ที่ `10.66.0.3` ไม่สำเร็จ → service ล่ม
+> แก้ด้วยการบอก systemd ให้รอ wg0 ก่อน:
+
+```bash
+sudo mkdir -p /etc/systemd/system/mariadb.service.d
+sudo tee /etc/systemd/system/mariadb.service.d/wait-wg.conf > /dev/null <<'EOF'
+[Unit]
+After=wg-quick@wg0.service
+Requires=wg-quick@wg0.service
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart mariadb
+sudo systemctl status mariadb --no-pager
+```
+
+---
+
+#### ขั้นที่ 4 — สร้างฐานข้อมูลและผู้ใช้
+
+```bash
+sudo mariadb
+```
+
+```sql
+CREATE DATABASE IF NOT EXISTS es_extended
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- ⚠️ ผูกสิทธิ์กับ "IP ฝั่ง WireGuard ของ i9" เท่านั้น ห้ามใช้ '%'
+CREATE USER 'fivem'@'10.66.0.2' IDENTIFIED BY 'รหัสผ่านสุ่มยาว32ตัว';
+GRANT ALL PRIVILEGES ON es_extended.* TO 'fivem'@'10.66.0.2';
+FLUSH PRIVILEGES;
+
+-- ตรวจว่าไม่มี user ที่เปิดกว้างหลงเหลือ
+SELECT user, host FROM mysql.user;
+```
+
+สร้างรหัสผ่านสุ่ม 32 ตัว — บน Windows: `powershell -c "[guid]::NewGuid().ToString('N')"`
+บน Linux: `openssl rand -hex 16`
+
+> เลี่ยงอักขระ `@ : / # ?` ในรหัสผ่าน จะได้ใช้ connection string รูปแบบ URI ได้สะดวก (ดูขั้นที่ 6)
+
+---
+
+#### ขั้นที่ 5 — ย้ายข้อมูล
+
+##### แผน A — มีช่วงปิดปรับปรุง (แนะนำ, ตรงไปตรงมา)
+
+**1) ประกาศปิดปรับปรุง** — เผื่อเวลาไว้ 30–60 นาที (งานจริงมักใช้ 5–15 นาที)
+
+**2) หยุด FXServer** ให้สนิท (สำคัญ — ไม่งั้นข้อมูลระหว่าง dump จะไม่ตรงกัน)
+
+**3) Dump บน i9** (PowerShell / cmd)
+— ปรับเลขเวอร์ชันในพาธให้ตรงกับที่ติดตั้งจริง (ดูในโฟลเดอร์ `C:\Program Files\`):
+
+```
+"C:\Program Files\MariaDB 11.4\bin\mariadb-dump.exe" -u root -p ^
+  --single-transaction --routines --triggers --events ^
+  --hex-blob --default-character-set=utf8mb4 ^
+  es_extended > D:\backup\es_extended.sql
+```
+
+| ตัวเลือก | ทำไมต้องมี |
+|---|---|
+| `--single-transaction` | dump แบบไม่ล็อกตาราง (ใช้ได้กับ InnoDB) |
+| `--routines --triggers --events` | เอา stored procedure / trigger / scheduled event ไปด้วย — **ลืมบ่อยมาก** |
+| `--hex-blob` | กัน binary data เพี้ยน |
+| `--default-character-set=utf8mb4` | กันภาษาไทยกลายเป็น `???` |
+
+**4) บีบอัดแล้วโอนผ่าน WireGuard:**
+
+```powershell
+# บน i9
+tar -czf D:\backup\es_extended.sql.gz -C D:\backup es_extended.sql
+scp D:\backup\es_extended.sql.gz user@10.66.0.3:/tmp/
+```
+
+**5) Import บน i5:**
+
+```bash
+cd /tmp
+gunzip es_extended.sql.gz
+time sudo mariadb --default-character-set=utf8mb4 es_extended < es_extended.sql
+```
+
+> ⏱️ ประมาณการบน NVMe: **~1–3 นาทีต่อข้อมูล 1 GB** (import ช้ากว่า dump ราว 2–3 เท่า)
+
+**6) ตรวจสอบว่าข้อมูลครบ** — เทียบ 2 เครื่อง:
+
+```sql
+-- รันทั้งบน i9 (ตัวเก่า) และ i5 (ตัวใหม่) แล้วเทียบผลให้ตรงกัน
+SELECT COUNT(*) AS total_tables
+FROM information_schema.tables WHERE table_schema = 'es_extended';
+
+-- นับจำนวนแถวจริงของตารางสำคัญ (อย่าใช้ table_rows ของ information_schema
+-- เพราะ InnoDB ให้ค่าประมาณ ไม่แม่นยำ)
+SELECT COUNT(*) FROM users;
+SELECT COUNT(*) FROM owned_vehicles;
+SELECT COUNT(*) FROM user_inventory;
+
+-- เช็คภาษาไทยไม่เพี้ยน
+SELECT name FROM users WHERE name REGEXP '[ก-๙]' LIMIT 5;
+```
+
+**7) แก้ connection string** (ขั้นที่ 6) → **8) เปิดเซิร์ฟ** → เฝ้าดู console
+
+##### แผน B — เกือบไม่มี downtime (สำหรับ DB ใหญ่มาก)
+
+ถ้า DB ใหญ่จน import กินเวลาเกินหน้าต่างที่รับได้ ให้ทำ replication แทน:
+
+1. ตั้ง i9 เป็น **master** (เปิด binlog, `server_id=1`) — ต้องรีสตาร์ท MariaDB หนึ่งครั้ง
+2. dump พร้อมตำแหน่ง binlog: เพิ่ม `--master-data=2` ตอน dump (เซิร์ฟยังเปิดอยู่ได้)
+3. import บน i5 แล้วตั้ง `CHANGE MASTER TO ...` ตามตำแหน่งที่ได้ → `START SLAVE`
+4. รอจน `SHOW SLAVE STATUS\G` แสดง `Seconds_Behind_Master: 0`
+5. ปิดเซิร์ฟ **แค่ 1–2 นาที** → เช็คว่า replica ตามทัน → `STOP SLAVE; RESET SLAVE ALL;` → เปลี่ยน connection string → เปิดเซิร์ฟ
+
+> แผน B ซับซ้อนกว่ามากและมีจุดพลาดเยอะ — **ใช้แผน A ก่อนเสมอ** ถ้าหน้าต่างปิดปรับปรุง 30 นาทีรับได้
+
+---
+
+#### ขั้นที่ 6 — แก้ `server.cfg` ให้ oxmysql ชี้ไป i5
+
+```cfg
+# ⚠️ ต้องตั้ง "ก่อน" บรรทัด ensure/start ของ resource อื่นทั้งหมด
+set mysql_connection_string "mysql://fivem:PASSWORD@10.66.0.3:3306/es_extended?charset=utf8mb4&connectionLimit=16&connectTimeout=10000"
+
+# แจ้งเตือน query ที่ช้ากว่า 150 ms — ไว้ตามหาสคริปต์ที่ถล่ม DB
+set mysql_slow_query_warning 150
+
+ensure oxmysql
+# ...resource อื่น ๆ ตามหลัง
+```
+
+> 🔴 **กับดักที่เจอบ่อยที่สุด:** ถ้ารหัสผ่านมีอักขระพิเศษ (`@` `:` `/` `#` `?`) รูปแบบ URI **จะพัง**
+> ให้เปลี่ยนไปใช้รูปแบบ semicolon แทน ซึ่ง oxmysql รองรับเหมือนกัน:
+
+```cfg
+set mysql_connection_string "user=fivem;password=P@ss:w0rd#1;host=10.66.0.3;port=3306;database=es_extended;charset=utf8mb4;connectionLimit=16"
+```
+
+**ค่า `connectionLimit`:** ใช้สูตรกฎของ Little จากขั้นที่ 0
+ส่วนใหญ่ **16 พอ** — ตั้งสูงเกินไปไม่ได้ทำให้เร็วขึ้น แต่จะไปกิน `max_connections` ของ DB แทน
+
+---
+
+#### ขั้นที่ 7 — ทดสอบ และแผนถอยกลับ
+
+**ทดสอบการเชื่อมต่อก่อนเปิดเซิร์ฟ** (จาก i9):
+
+```powershell
+"C:\Program Files\MariaDB 11.4\bin\mariadb.exe" -h 10.66.0.3 -u fivem -p ^
+  -e "SELECT VERSION(), NOW(), COUNT(*) FROM users;" es_extended
+```
+
+**ตอนเปิดเซิร์ฟ ให้ดู console ของ oxmysql** — ต้องขึ้นว่าเชื่อมต่อสำเร็จ และ **ต้องไม่มี** `ETIMEDOUT` / `ECONNREFUSED`
+
+**เฝ้าดู 24 ชั่วโมงแรก:**
+
+```bash
+# บน i5 — query ที่ช้า
+sudo tail -f /var/log/mysql/slow.log
+
+# จำนวน connection ที่ใช้จริง
+sudo mariadb -e "SHOW STATUS LIKE 'Threads_connected'; SHOW STATUS LIKE 'Max_used_connections';"
+```
+
+พร้อมกับดู **tick time ใน txAdmin** เทียบก่อน/หลัง — นี่คือตัวชี้วัดว่าย้ายแล้วคุ้มจริงไหม
+
+**แผนถอยกลับ (rollback) — เตรียมไว้เสมอ:**
+
+1. เปลี่ยน `mysql_connection_string` กลับเป็น `mysql://...@localhost:3306/...`
+2. รีสตาร์ทเซิร์ฟ
+3. ⚠️ **ห้ามลบ DB เดิมบน i9 ทันที** — เก็บไว้อย่างน้อย **1–2 สัปดาห์**
+   (แต่จำไว้ว่าข้อมูลที่เขียนลง i5 ไปแล้วจะไม่อยู่ในตัวเก่า — ถ้า rollback หลังเปิดเซิร์ฟไปแล้วต้อง dump กลับมาจาก i5)
+
+---
+
+#### ขั้นที่ 8 — ตั้งระบบสำรองข้อมูล (DB ย้ายบ้านแล้ว backup เดิมใช้ไม่ได้)
+
+```bash
+sudo apt -y install mariadb-backup
+sudo mkdir -p /var/backups/mariadb
+
+sudo tee /usr/local/bin/db-backup > /dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+DEST=/var/backups/mariadb
+STAMP=$(date +%F_%H%M)
+mariadb-dump --single-transaction --routines --triggers --events \
+  --hex-blob --default-character-set=utf8mb4 es_extended \
+  | gzip > "$DEST/es_extended_$STAMP.sql.gz"
+# เก็บย้อนหลัง 14 วัน
+find "$DEST" -name '*.sql.gz' -mtime +14 -delete
+echo "[✓] backup: $DEST/es_extended_$STAMP.sql.gz"
+EOF
+sudo chmod +x /usr/local/bin/db-backup
+
+# ทุกวันตี 5
+echo "0 5 * * * root /usr/local/bin/db-backup >> /var/log/db-backup.log 2>&1" \
+  | sudo tee /etc/cron.d/db-backup
+```
+
+> 🔴 **backup ที่ไม่เคยลอง restore = ไม่มี backup** — ทดลอง restore ลง DB ชื่ออื่นอย่างน้อยเดือนละครั้ง
+
+---
+
+#### ขั้นที่ 9 — ลดจำนวน query (สำคัญกว่าการเร่ง DB)
+
+เมื่อ DB อยู่คนละเครื่อง สิ่งที่แพงคือ **จำนวนครั้งที่วิ่งไป-กลับ** ไม่ใช่ความเร็วของ DB
+ดังนั้นการลด query 100 ครั้งให้เหลือ 1 ครั้ง คุ้มกว่าการเร่ง DB ให้เร็วขึ้น 2 เท่า
+
+```lua
+-- ❌ N+1 — 100 ผู้เล่น = 100 round trip = 350 ms ที่ 3.5 ms ต่อครั้ง
+for _, id in ipairs(identifiers) do
+    local row = MySQL.single.await('SELECT * FROM users WHERE identifier = ?', { id })
+end
+
+-- ✅ รวบเป็น query เดียว = 1 round trip
+-- string.rep(s, n, sep) ของ Lua 5.4 สร้าง "?,?,?" ให้เลย
+local placeholders = ('?'):rep(#identifiers, ',')
+local rows = MySQL.query.await(
+    ('SELECT * FROM users WHERE identifier IN (%s)'):format(placeholders),
+    identifiers
+)
+
+-- ✅ เขียนหลายแถวรวดเดียวด้วย prepare
+MySQL.prepare.await('UPDATE users SET money = ? WHERE identifier = ?', batchedRows)
+
+-- ✅ หลาย statement ที่ต้องสำเร็จพร้อมกัน → transaction (1 round trip)
+MySQL.transaction.await({
+    { query = 'UPDATE users SET money = money - ? WHERE identifier = ?', values = { amount, from } },
+    { query = 'UPDATE users SET money = money + ? WHERE identifier = ?', values = { amount, to } },
+})
+```
+
+เช็คลิสต์เพิ่มเติม:
+
+- ใส่ **index** ทุกคอลัมน์ที่ใช้ใน `WHERE` / `JOIN` (โดยเฉพาะ `identifier`)
+  หา query ที่ไม่ใช้ index ได้จาก `slow.log` (เปิด `log_queries_not_using_indexes` ไว้แล้วในขั้นที่ 3)
+- เก็บข้อมูลที่อ่านบ่อย–เปลี่ยนน้อย (config, ราคาสินค้า, job) ไว้ใน memory ตอนเซิร์ฟสตาร์ท ไม่ต้อง query ซ้ำ
+- อย่า query ใน loop ที่วิ่งทุกเฟรม หรือใน `Citizen.CreateThread` ที่ `Wait(0)`
+- เขียนข้อมูลผู้เล่นแบบ **batch ทุก 5–10 นาที** แทนการเขียนทุกครั้งที่ค่าเปลี่ยน
+
 ---
 
 ## 5. ลำดับการลงมือทำ
@@ -1108,7 +1527,7 @@ $p.ProcessorAffinity = 0xFFFF
 | **1** | เขียนสคริปต์ล้างแคชเข้า deploy flow (ข้อ 2.8) | ไม่มีปัญหาไฟล์เก่าค้าง |
 | **2** | โปรไฟล์หา resource ที่กิน tick (ข้อ 4.9) แล้วแก้ 5 ตัวแรก | tick time ลดลง |
 | **2** | เปิด culling + routing bucket (ข้อ 4.3–4.4) | tick time ลดลงอีก |
-| **3** | ย้าย DB ไปเครื่อง i5 (ถ้า latency ผ่าน) | tick time นิ่งขึ้น |
+| **3** | ย้าย MariaDB ไปเครื่อง i5 **ถ้าวัด latency แล้วผ่าน** (ข้อ 4.10) | tick time นิ่งขึ้น, ปลดพื้นที่ M.2 |
 | **3** | เพิ่มสล็อตทีละ 100 → 800 → 900 → 1024 | วัดทุกรอบ |
 | **4** | เช่า VPS ตัวที่ 2 ทำ Cutter (ข้อ 3) **ถ้าวัด latency แล้วผ่าน** | IP ซ่อน + กัน DDoS |
 
@@ -1132,6 +1551,11 @@ $p.ProcessorAffinity = 0xFFFF
 | tick time กระตุกเป็นช่วง ๆ | Windows ย้ายเธรดหลักไป E-core / Defender สแกน | ตั้ง affinity + exclusion (ข้อ 4.6) |
 | เซิร์ฟดี แต่บางคนวาร์ป | packet loss ฝั่งผู้เล่นเอง | ให้กด F8 → `netgraph` ดู loss |
 | แคชกินดิสก์จนเต็ม | `max_size` สูงเกินไป | ลด `max_size` ใน `proxy_cache_path` |
+| ย้าย DB แล้วเซิร์ฟช้าลง | RTT ข้าม DC สูง + สคริปต์ยิง query แบบ N+1 | วัดใหม่ตามข้อ 4.10 ขั้นที่ 0, รวบ query (ขั้นที่ 9), ถ้าไม่ดีขึ้นให้ rollback |
+| MariaDB ไม่สตาร์ตหลังรีบูต i5 | `bind-address` ชี้ IP ของ WireGuard แต่ wg0 ยังไม่ขึ้น | เพิ่ม systemd override `After=wg-quick@wg0` (ข้อ 4.10 ขั้นที่ 3) |
+| เชื่อม DB ค้างนานหลายวินาทีต่อ connection | MariaDB ทำ reverse DNS lookup ของ client | ใส่ `skip-name-resolve` ใน my.cnf |
+| oxmysql ขึ้น error เชื่อมต่อไม่ได้ ทั้งที่ ping ผ่าน | รหัสผ่านมีอักขระพิเศษ ทำให้ URI พัง | ใช้รูปแบบ `user=;password=;host=...` แทน (ข้อ 4.10 ขั้นที่ 6) |
+| ภาษาไทยใน DB กลายเป็น `???` หลังย้าย | dump/import ไม่ได้ระบุ charset | dump ใหม่ด้วย `--default-character-set=utf8mb4` |
 
 ---
 
