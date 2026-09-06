@@ -1156,14 +1156,48 @@ mtr -rwzc 200 <IP_เครื่อง_i9>
 ถ้าข้าม DC ที่ 3 ms = **ทุก query ช้าลงราว 10 เท่า** สคริปต์ที่ยิง 5 query ต่อการกระทำ 1 ครั้ง
 จะจาก ~2 ms กลายเป็น ~17 ms — ผู้เล่นเริ่มรู้สึกได้
 
-**วัด CPU ที่ MariaDB กินจริงบน i9 ก่อน** — นี่คือตัวเลขที่บอกว่าย้ายแล้วจะได้อะไรคืนมา:
+**วัด CPU ที่ MariaDB กินจริง** — นี่คือตัวเลขที่บอกว่าย้ายแล้วจะได้อะไรคืนมา
+
+> 🔴 **มีเงื่อนไข 2 ข้อ ไม่งั้นตัวเลขไม่มีความหมายเลย:**
+> 1. ต้องรันบน **เครื่องที่รัน MariaDB ตัวโปรดักชัน** (ตัวที่ FXServer เชื่อมต่ออยู่จริง)
+>    ไม่ใช่ instance ที่เพิ่งติดตั้งใหม่และยังไม่มีใครต่อเข้า
+> 2. ต้องรัน **ตอนผู้เล่นเต็มเซิร์ฟ** — วัดตอนตี 3 ที่เซิร์ฟว่างจะได้ 0% ทุกครั้ง ซึ่งไม่ได้บอกอะไร
+
+**ขั้นแรก — ยืนยันก่อนว่ากำลังวัด instance ไหนอยู่:**
 
 ```powershell
-# ดูค่าเฉลี่ย 60 วินาทีของ mysqld (หารด้วยจำนวน logical core เพื่อได้ % ของทั้งเครื่อง)
+# มี mysqld บนเครื่องนี้จริงไหม รันจากพาธไหน
+Get-Process mysqld -ErrorAction SilentlyContinue | Select-Object Id, Path, StartTime
+
+# มีใครเชื่อมต่อเข้ามาบ้าง — ว่างเปล่า = instance นี้ยังไม่มีใครใช้
+Get-NetTCPConnection -LocalPort 3306 -State Established -ErrorAction SilentlyContinue |
+  Select-Object RemoteAddress, RemotePort
+```
+
+ชี้ชัดที่สุดคือถามตัว MariaDB เอง:
+
+```sql
+-- เห็น Host เป็น IP ของ i9  → นี่คือ DB โปรดักชัน
+-- เห็นแต่ root@localhost     → instance นี้ยังไม่มีใครใช้
+SHOW PROCESSLIST;
+
+-- QPS เฉลี่ยตั้งแต่ MariaDB สตาร์ต (ไม่ต้องรอ 60 วินาที)
+SHOW GLOBAL STATUS LIKE 'Questions';
+SHOW GLOBAL STATUS LIKE 'Uptime';
+-- QPS = Questions / Uptime
+```
+
+**ขั้นที่สอง — วัด CPU (ตอนคนเต็มเท่านั้น):**
+
+```powershell
+# ค่าเฉลี่ย 60 วินาที; ค่าที่ได้คือ % ของ "หนึ่งคอร์" (เกิน 100 ได้ถ้าใช้หลายคอร์)
 Get-Counter '\Process(mysqld)\% Processor Time' -SampleInterval 5 -MaxSamples 12 |
   ForEach-Object { $_.CounterSamples[0].CookedValue } |
   Measure-Object -Average -Maximum
 ```
+
+> ℹ️ ผลลัพธ์ `Count : 12` แปลว่าเก็บตัวอย่างครบ 12 ครั้ง (= มีโปรเซส `mysqld` อยู่บนเครื่องนั้นจริง)
+> ส่วน `Sum` กับ `Minimum` ที่ว่างเปล่าเป็นเรื่องปกติ เพราะไม่ได้สั่ง `-Sum -Minimum`
 
 | ผลที่ได้ (% ของ 1 คอร์) | แปลว่า |
 |---|---|
