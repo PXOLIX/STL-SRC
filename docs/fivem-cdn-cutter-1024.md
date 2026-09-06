@@ -1068,7 +1068,7 @@ $p.ProcessorAffinity = 0xFFFF
   ```
 - เครื่อง i5 (10C/16T, 16 GB, NVMe 1 TB) **เหลือกำลังเยอะมาก** สำหรับแค่งานเสียง
   แนะนำให้ย้ายงานพวกนี้มาลงด้วย เพื่อปลดภาระเครื่อง i9:
-  - **MariaDB / MySQL** ← คุ้มที่สุด (query ช้าคือสาเหตุ tick กระตุกอันดับต้น ๆ)
+  - **MariaDB / MySQL** — ดูข้อ 4.10 ก่อน (วัดแล้วพบว่า DB เล็กมาก ผลตอบแทนต่ำกว่าที่คาด)
   - txAdmin (แยกจากเครื่องเกม)
   - Discord bot / เว็บ / API
   - ⚠️ ระวัง: DB อยู่คนละ DC กับ i9 = ทุก query บวก latency ข้าม DC
@@ -1100,6 +1100,35 @@ $p.ProcessorAffinity = 0xFFFF
 
 ### 4.10 ย้าย MariaDB จาก i9 → i5 (ทีละขั้น)
 
+#### 📊 ผลการวัดจริงของเซิร์ฟนี้ (อัปเดต 2026-09-06)
+
+| สิ่งที่วัด | ค่าที่ได้ | แปลว่า |
+|---|---|---|
+| ping i9 → i5 (`103.253.74.66`, ReadyIDC) | 100/100 แพ็กเก็ต, **0% loss**<br>Min/Max/Avg = **0 ms** ทั้งหมด, TTL 123 | ✅ **เส้นทางสมบูรณ์แบบ** — ไม่มี spike แม้แต่ครั้งเดียวใน 100 ครั้ง ไม่มีปัญหาข้าม DC |
+| ขนาด `happy_base` | **0.16 GB (163.5 MiB)** | ⚠️ **เล็กมาก** |
+| ขนาด `stl_watchdog` | 0.01 GB | มีอีก 1 ฐานข้อมูลที่ต้องย้ายด้วย |
+
+> 🔻 **ข้อสรุปที่เปลี่ยนไปจากคำแนะนำเดิม**
+>
+> ตอนที่ยังไม่รู้ขนาด DB ผมจัดให้การย้าย MariaDB เป็นงาน "คุ้มที่สุด" ของเครื่อง i5
+> **พอวัดจริงแล้วไม่ใช่** — ฐานข้อมูลรวมกันแค่ ~165 MB ซึ่งหมายความว่า:
+>
+> - DB ทั้งก้อน**อยู่ใน RAM อยู่แล้ว** → ดิสก์ IO จาก MariaDB บน i9 แทบเป็นศูนย์
+> - พื้นที่ที่จะปลดได้จาก M.2 250 GB คือ **165 MB** → ไม่ช่วยอะไรเลย
+> - สิ่งที่ MariaDB กินบน i9 เหลือแค่ **CPU จากการประมวลผล query** ซึ่งการย้ายเครื่อง
+>   **ไม่ได้ลดจำนวน query ลงแม้แต่ query เดียว** — แค่ย้ายที่ทำงาน แถมบวก latency เข้าไปอีก
+>
+> **ให้วัด 2 อย่างนี้ก่อนตัดสินใจย้าย** (ดูขั้นที่ 0 ต่อด้านล่าง):
+> 1. `mysqld.exe` กิน CPU บน i9 กี่ % — ถ้าต่ำกว่า ~10% ของหนึ่งคอร์ **การย้ายแทบไม่ช่วยอะไร**
+> 2. queries/sec เป็นเท่าไหร่ — ถ้าสูงผิดปกติ ปัญหาอยู่ที่**สคริปต์ยิง query เยอะเกิน** ไม่ใช่ที่ตัว DB
+>    → การย้ายเครื่องจะทำให้**แย่ลง** เพราะทุก query บวก latency เพิ่ม
+>
+> **ลำดับความสำคัญที่ถูกต้องสำหรับเซิร์ฟนี้:**
+> ข้อ 4.5 (optimize resource) → ขั้นที่ 9 ด้านล่าง (ลดจำนวน query) → **ค่อยพิจารณาย้าย DB ทีหลัง**
+> การย้าย DB ยัง "ทำได้" และปลอดภัย (ping ผ่าน) แต่ไม่ใช่งานที่ควรทำก่อน
+
+---
+
 #### ขั้นที่ 0 — ตัดสินใจก่อน (ห้ามข้าม)
 
 เครื่อง i9 อยู่ **PTNK** เครื่อง i5 อยู่ **ReadyIDC** = คนละ DC
@@ -1118,7 +1147,7 @@ mtr -rwzc 200 <IP_เครื่อง_i9>
 
 | ping i9 ↔ i5 | ตัดสินใจ |
 |---|---|
-| **< 1 ms** | ✅ ย้ายได้เลย ← **วัดจริงแล้วได้ค่านี้** (`time<1ms`, TTL 123) |
+| **< 1 ms** | ✅ ย้ายได้เลย ← **วัดจริงแล้วได้ค่านี้** (Min/Max/Avg = 0 ms, 0% loss จาก 100 แพ็กเก็ต) |
 | **1–3 ms** | ✅ ย้ายได้ ถ้าสคริปต์ไม่ยิง query ซ้ำซ้อน (N+1) |
 | **3–10 ms** | ⚠️ ย้ายเฉพาะเมื่อพิสูจน์แล้วว่า CPU/ดิสก์ของ i9 เป็นคอขวดจริง — และต้อง optimize query ก่อน |
 | **> 10 ms หรือมี packet loss** | ❌ **อย่าย้าย** — เก็บ DB ไว้บน i9 แล้วไปแก้ที่อื่นแทน |
@@ -1126,6 +1155,21 @@ mtr -rwzc 200 <IP_เครื่อง_i9>
 **ทำไมต้องซีเรียสขนาดนี้:** query บนเครื่องเดียวกันใช้เวลาไป-กลับ ~0.2–0.5 ms
 ถ้าข้าม DC ที่ 3 ms = **ทุก query ช้าลงราว 10 เท่า** สคริปต์ที่ยิง 5 query ต่อการกระทำ 1 ครั้ง
 จะจาก ~2 ms กลายเป็น ~17 ms — ผู้เล่นเริ่มรู้สึกได้
+
+**วัด CPU ที่ MariaDB กินจริงบน i9 ก่อน** — นี่คือตัวเลขที่บอกว่าย้ายแล้วจะได้อะไรคืนมา:
+
+```powershell
+# ดูค่าเฉลี่ย 60 วินาทีของ mysqld (หารด้วยจำนวน logical core เพื่อได้ % ของทั้งเครื่อง)
+Get-Counter '\Process(mysqld)\% Processor Time' -SampleInterval 5 -MaxSamples 12 |
+  ForEach-Object { $_.CounterSamples[0].CookedValue } |
+  Measure-Object -Average -Maximum
+```
+
+| ผลที่ได้ (% ของ 1 คอร์) | แปลว่า |
+|---|---|
+| < 10% | ย้ายแล้วได้คืนแทบไม่มี — **อย่าเพิ่งย้าย** ไปทำข้อ 4.5 ก่อน |
+| 10–50% | ย้ายแล้วพอได้ประโยชน์ |
+| > 50% | มี query problem — **ย้ายไม่ช่วย** ต้องไปแก้ที่สคริปต์ (ขั้นที่ 9) |
 
 **วัดปริมาณ query จริงก่อน** (รันบน DB ปัจจุบัน):
 
@@ -1247,11 +1291,12 @@ wait_timeout        = 600
 interactive_timeout = 600
 
 # ── InnoDB ─────────────────────────────────────
-# i5 มี RAM 16 GB และยังต้องรันงานเสียงด้วย → 8G คือจุดที่ปลอดภัย
-# ถ้าฐานข้อมูลเล็กกว่านี้ ให้ตั้งเท่ากับ (ขนาด DB × 1.2) ก็พอ
-innodb_buffer_pool_size      = 8G
-innodb_buffer_pool_instances = 8
-innodb_log_file_size         = 1G
+# กฎ: ตั้งเท่ากับ (ขนาด DB × 1.5) ปัดขึ้น — ไม่ใช่ % ของ RAM
+# DB ของคุณรวมกัน ~165 MB → 1G เหลือเฟือแล้ว และเหลือ RAM ให้งานเสียงอีก 15 GB
+# (ตั้ง 8G ไม่ได้ทำให้เร็วขึ้นเลยเมื่อ DB เล็กกว่านั้น — แค่จอง RAM ทิ้งไว้เปล่า ๆ)
+innodb_buffer_pool_size      = 1G
+innodb_buffer_pool_instances = 1
+innodb_log_file_size         = 256M
 innodb_flush_method          = O_DIRECT
 
 # ⚠️ trade-off: ค่า 2 เร็วกว่ามาก แต่ถ้าไฟดับกะทันหันอาจเสีย transaction ≤ 1 วินาที
@@ -1298,13 +1343,18 @@ sudo systemctl status mariadb --no-pager
 sudo mariadb
 ```
 
+> ⚠️ เซิร์ฟนี้มี **2 ฐานข้อมูล**: `happy_base` (หลัก) และ `stl_watchdog` — ต้องย้ายทั้งคู่
+
 ```sql
-CREATE DATABASE IF NOT EXISTS es_extended
+CREATE DATABASE IF NOT EXISTS happy_base
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS stl_watchdog
   CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- ⚠️ ผูกสิทธิ์กับ "IP ฝั่ง WireGuard ของ i9" เท่านั้น ห้ามใช้ '%'
 CREATE USER 'fivem'@'10.66.0.2' IDENTIFIED BY 'รหัสผ่านสุ่มยาว32ตัว';
-GRANT ALL PRIVILEGES ON es_extended.* TO 'fivem'@'10.66.0.2';
+GRANT ALL PRIVILEGES ON happy_base.*   TO 'fivem'@'10.66.0.2';
+GRANT ALL PRIVILEGES ON stl_watchdog.* TO 'fivem'@'10.66.0.2';
 FLUSH PRIVILEGES;
 
 -- ตรวจว่าไม่มี user ที่เปิดกว้างหลงเหลือ
@@ -1333,8 +1383,10 @@ SELECT user, host FROM mysql.user;
 "C:\Program Files\MariaDB 11.4\bin\mariadb-dump.exe" -u root -p ^
   --single-transaction --routines --triggers --events ^
   --hex-blob --default-character-set=utf8mb4 ^
-  es_extended > D:\backup\es_extended.sql
+  --databases happy_base stl_watchdog > D:\backup\fivem_all.sql
 ```
+
+> `--databases` จะใส่คำสั่ง `CREATE DATABASE` / `USE` ให้ในไฟล์เอง → import ทีเดียวได้ทั้งสองฐาน
 
 | ตัวเลือก | ทำไมต้องมี |
 |---|---|
@@ -1347,26 +1399,28 @@ SELECT user, host FROM mysql.user;
 
 ```powershell
 # บน i9
-tar -czf D:\backup\es_extended.sql.gz -C D:\backup es_extended.sql
-scp D:\backup\es_extended.sql.gz user@10.66.0.3:/tmp/
+tar -czf D:\backup\happy_base.sql.gz -C D:\backup happy_base.sql
+scp D:\backup\happy_base.sql.gz user@10.66.0.3:/tmp/
 ```
 
 **5) Import บน i5:**
 
 ```bash
 cd /tmp
-gunzip es_extended.sql.gz
-time sudo mariadb --default-character-set=utf8mb4 es_extended < es_extended.sql
+gunzip happy_base.sql.gz
+time sudo mariadb --default-character-set=utf8mb4 happy_base < happy_base.sql
 ```
 
-> ⏱️ ประมาณการบน NVMe: **~1–3 นาทีต่อข้อมูล 1 GB** (import ช้ากว่า dump ราว 2–3 เท่า)
+> ⏱️ ประมาณการบน NVMe: ~1–3 นาทีต่อข้อมูล 1 GB
+> **เซิร์ฟนี้มีแค่ ~165 MB → dump + โอน + import รวมกันไม่เกิน 1–2 นาที**
+> หน้าต่างปิดปรับปรุงจริงจึงสั้นมาก (เผื่อไว้ 15 นาทีก็เหลือเฟือ) → **ใช้แผน A ไปเลย ไม่ต้องคิดถึงแผน B**
 
 **6) ตรวจสอบว่าข้อมูลครบ** — เทียบ 2 เครื่อง:
 
 ```sql
 -- รันทั้งบน i9 (ตัวเก่า) และ i5 (ตัวใหม่) แล้วเทียบผลให้ตรงกัน
 SELECT COUNT(*) AS total_tables
-FROM information_schema.tables WHERE table_schema = 'es_extended';
+FROM information_schema.tables WHERE table_schema = 'happy_base';
 
 -- นับจำนวนแถวจริงของตารางสำคัญ (อย่าใช้ table_rows ของ information_schema
 -- เพราะ InnoDB ให้ค่าประมาณ ไม่แม่นยำ)
@@ -1380,7 +1434,7 @@ SELECT name FROM users WHERE name REGEXP '[ก-๙]' LIMIT 5;
 
 **7) แก้ connection string** (ขั้นที่ 6) → **8) เปิดเซิร์ฟ** → เฝ้าดู console
 
-##### แผน B — เกือบไม่มี downtime (สำหรับ DB ใหญ่มาก)
+##### แผน B — เกือบไม่มี downtime (สำหรับ DB ใหญ่มาก — **เซิร์ฟนี้ไม่ต้องใช้**)
 
 ถ้า DB ใหญ่จน import กินเวลาเกินหน้าต่างที่รับได้ ให้ทำ replication แทน:
 
@@ -1398,7 +1452,7 @@ SELECT name FROM users WHERE name REGEXP '[ก-๙]' LIMIT 5;
 
 ```cfg
 # ⚠️ ต้องตั้ง "ก่อน" บรรทัด ensure/start ของ resource อื่นทั้งหมด
-set mysql_connection_string "mysql://fivem:PASSWORD@10.66.0.3:3306/es_extended?charset=utf8mb4&connectionLimit=16&connectTimeout=10000"
+set mysql_connection_string "mysql://fivem:PASSWORD@10.66.0.3:3306/happy_base?charset=utf8mb4&connectionLimit=16&connectTimeout=10000"
 
 # แจ้งเตือน query ที่ช้ากว่า 150 ms — ไว้ตามหาสคริปต์ที่ถล่ม DB
 set mysql_slow_query_warning 150
@@ -1411,7 +1465,7 @@ ensure oxmysql
 > ให้เปลี่ยนไปใช้รูปแบบ semicolon แทน ซึ่ง oxmysql รองรับเหมือนกัน:
 
 ```cfg
-set mysql_connection_string "user=fivem;password=P@ss:w0rd#1;host=10.66.0.3;port=3306;database=es_extended;charset=utf8mb4;connectionLimit=16"
+set mysql_connection_string "user=fivem;password=P@ss:w0rd#1;host=10.66.0.3;port=3306;database=happy_base;charset=utf8mb4;connectionLimit=16"
 ```
 
 **ค่า `connectionLimit`:** ใช้สูตรกฎของ Little จากขั้นที่ 0
@@ -1425,7 +1479,7 @@ set mysql_connection_string "user=fivem;password=P@ss:w0rd#1;host=10.66.0.3;port
 
 ```powershell
 "C:\Program Files\MariaDB 11.4\bin\mariadb.exe" -h 10.66.0.3 -u fivem -p ^
-  -e "SELECT VERSION(), NOW(), COUNT(*) FROM users;" es_extended
+  -e "SELECT VERSION(), NOW(), COUNT(*) FROM users;" happy_base
 ```
 
 **ตอนเปิดเซิร์ฟ ให้ดู console ของ oxmysql** — ต้องขึ้นว่าเชื่อมต่อสำเร็จ และ **ต้องไม่มี** `ETIMEDOUT` / `ECONNREFUSED`
@@ -1463,11 +1517,11 @@ set -euo pipefail
 DEST=/var/backups/mariadb
 STAMP=$(date +%F_%H%M)
 mariadb-dump --single-transaction --routines --triggers --events \
-  --hex-blob --default-character-set=utf8mb4 es_extended \
-  | gzip > "$DEST/es_extended_$STAMP.sql.gz"
+  --hex-blob --default-character-set=utf8mb4 happy_base \
+  | gzip > "$DEST/happy_base_$STAMP.sql.gz"
 # เก็บย้อนหลัง 14 วัน
 find "$DEST" -name '*.sql.gz' -mtime +14 -delete
-echo "[✓] backup: $DEST/es_extended_$STAMP.sql.gz"
+echo "[✓] backup: $DEST/happy_base_$STAMP.sql.gz"
 EOF
 sudo chmod +x /usr/local/bin/db-backup
 
@@ -1578,9 +1632,10 @@ wait_timeout        = 600
 interactive_timeout = 600
 
 # ── InnoDB ─────────────────────────────────────
-innodb_buffer_pool_size      = 8G
-innodb_buffer_pool_instances = 8
-innodb_log_file_size         = 1G
+# ~165 MB DB → 1G เหลือเฟือ (ดูเหตุผลในบล็อก Linux ด้านบน)
+innodb_buffer_pool_size      = 1G
+innodb_buffer_pool_instances = 1
+innodb_log_file_size         = 256M
 
 # ⚠️ ห้ามใส่ innodb_flush_method = O_DIRECT บน Windows
 #    O_DIRECT เป็นของ Unix เท่านั้น — Windows ใช้ async_unbuffered เป็นค่าเริ่มต้นอยู่แล้ว
@@ -1661,11 +1716,11 @@ New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 & "$Bin\mariadb-dump.exe" --defaults-file="C:\scripts\backup.cnf" `
     --single-transaction --routines --triggers --events `
     --hex-blob --default-character-set=utf8mb4 `
-    es_extended | Out-File -Encoding utf8 "$Dest\es_extended_$Stamp.sql"
+    happy_base | Out-File -Encoding utf8 "$Dest\happy_base_$Stamp.sql"
 
-Compress-Archive -Path "$Dest\es_extended_$Stamp.sql" `
-                 -DestinationPath "$Dest\es_extended_$Stamp.zip" -Force
-Remove-Item "$Dest\es_extended_$Stamp.sql"
+Compress-Archive -Path "$Dest\happy_base_$Stamp.sql" `
+                 -DestinationPath "$Dest\happy_base_$Stamp.zip" -Force
+Remove-Item "$Dest\happy_base_$Stamp.sql"
 
 # เก็บย้อนหลัง 14 วัน
 Get-ChildItem $Dest -Filter *.zip |
@@ -1705,7 +1760,7 @@ Register-ScheduledTask -TaskName 'MariaDB Backup' -Action $A -Trigger $T `
 | **1** | เขียนสคริปต์ล้างแคชเข้า deploy flow (ข้อ 2.8) | ไม่มีปัญหาไฟล์เก่าค้าง |
 | **2** | โปรไฟล์หา resource ที่กิน tick (ข้อ 4.9) แล้วแก้ 5 ตัวแรก | tick time ลดลง |
 | **2** | เปิด culling + routing bucket (ข้อ 4.3–4.4) | tick time ลดลงอีก |
-| **3** | ย้าย MariaDB ไปเครื่อง i5 **ถ้าวัด latency แล้วผ่าน** (ข้อ 4.10) | tick time นิ่งขึ้น, ปลดพื้นที่ M.2 |
+| **3** | ~~ย้าย MariaDB ไป i5~~ → **ลดจำนวน query แทน** (ข้อ 4.10 ขั้นที่ 9)<br><sub>วัดแล้ว DB แค่ 165 MB — ย้ายเครื่องไม่ลด query ลงเลย ทำทีหลังได้</sub> | tick time นิ่งขึ้นจริง |
 | **3** | เพิ่มสล็อตทีละ 100 → 800 → 900 → 1024 | วัดทุกรอบ |
 | **4** | เช่า VPS ตัวที่ 2 ทำ Cutter (ข้อ 3) **ถ้าวัด latency แล้วผ่าน** | IP ซ่อน + กัน DDoS |
 
