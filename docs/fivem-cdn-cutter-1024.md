@@ -1118,7 +1118,7 @@ mtr -rwzc 200 <IP_เครื่อง_i9>
 
 | ping i9 ↔ i5 | ตัดสินใจ |
 |---|---|
-| **< 1 ms** | ✅ ย้ายได้เลย |
+| **< 1 ms** | ✅ ย้ายได้เลย ← **วัดจริงแล้วได้ค่านี้** (`time<1ms`, TTL 123) |
 | **1–3 ms** | ✅ ย้ายได้ ถ้าสคริปต์ไม่ยิง query ซ้ำซ้อน (N+1) |
 | **3–10 ms** | ⚠️ ย้ายเฉพาะเมื่อพิสูจน์แล้วว่า CPU/ดิสก์ของ i9 เป็นคอขวดจริง — และต้อง optimize query ก่อน |
 | **> 10 ms หรือมี packet loss** | ❌ **อย่าย้าย** — เก็บ DB ไว้บน i9 แล้วไปแก้ที่อื่นแทน |
@@ -1516,6 +1516,184 @@ MySQL.transaction.await({
 - เก็บข้อมูลที่อ่านบ่อย–เปลี่ยนน้อย (config, ราคาสินค้า, job) ไว้ใน memory ตอนเซิร์ฟสตาร์ท ไม่ต้อง query ซ้ำ
 - อย่า query ใน loop ที่วิ่งทุกเฟรม หรือใน `Citizen.CreateThread` ที่ `Wait(0)`
 - เขียนข้อมูลผู้เล่นแบบ **batch ทุก 5–10 นาที** แทนการเขียนทุกครั้งที่ค่าเปลี่ยน
+
+
+---
+
+#### ภาคผนวก 4.10-W — ถ้าเครื่อง i5 เป็น **Windows** (ขั้นตอนที่ต่างออกไป)
+
+ขั้นที่ 0, 5 (dump/import), 6 (connection string), 7 (ทดสอบ) และ 9 (ลด query) **ใช้เหมือนกันทุกอย่าง**
+ต่างกันเฉพาะ 4 ขั้นนี้:
+
+##### W-1 ติดตั้ง MariaDB
+
+1. โหลด **MariaDB Server (MSI)** จาก mariadb.org → เลือกเวอร์ชัน LTS
+2. ระหว่างติดตั้ง:
+   - ✅ ติ๊ก **"Use UTF8 as default server's character set"**
+   - ✅ ติ๊ก **Install as service** → ชื่อ service `MariaDB`
+   - ❌ **อย่า** ติ๊ก "Enable access from remote machines for 'root' user"
+3. ตรวจเวอร์ชัน: `"C:\Program Files\MariaDB 11.4\bin\mariadb.exe" --version`
+
+##### W-2 WireGuard บน i5
+
+ติดตั้ง **WireGuard for Windows** → Add Tunnel → Add empty tunnel → ตั้งชื่อทันเนลว่า `wg0`
+
+```ini
+[Interface]
+PrivateKey = <I5_PRIVATE_KEY>
+Address    = 10.66.0.3/24
+ListenPort = 51820
+
+[Peer]
+# FXServer (Windows i9)
+PublicKey  = <WINDOWS_I9_PUBLIC_KEY>
+Endpoint   = <IP_สาธารณะ_i9>:51820
+AllowedIPs = 10.66.0.2/32
+PersistentKeepalive = 25
+```
+
+เปิดพอร์ต WireGuard ขาเข้า:
+
+```powershell
+New-NetFirewallRule -DisplayName "WireGuard" -Direction Inbound `
+  -Protocol UDP -LocalPort 51820 -Action Allow
+```
+
+##### W-3 คอนฟิก `my.ini` — **ต่างจาก Linux ตรงนี้ ระวัง**
+
+แก้ไฟล์ `C:\Program Files\MariaDB 11.4\data\my.ini` ในหัวข้อ `[mysqld]`:
+
+```ini
+[mysqld]
+# ── เครือข่าย ──────────────────────────────────
+# บน Windows แนะนำให้ bind 0.0.0.0 แล้วกันด้วย Firewall แทน
+# (ถ้า bind ไปที่ 10.66.0.3 ตรง ๆ service จะสตาร์ตไม่ขึ้นตอนบูต
+#  เพราะ MariaDB ขึ้นก่อน WireGuard — Windows ไม่มี systemd ให้สั่งรอง่าย ๆ)
+bind-address    = 0.0.0.0
+skip-name-resolve
+
+max_connections     = 200
+thread_cache_size   = 64
+wait_timeout        = 600
+interactive_timeout = 600
+
+# ── InnoDB ─────────────────────────────────────
+innodb_buffer_pool_size      = 8G
+innodb_buffer_pool_instances = 8
+innodb_log_file_size         = 1G
+
+# ⚠️ ห้ามใส่ innodb_flush_method = O_DIRECT บน Windows
+#    O_DIRECT เป็นของ Unix เท่านั้น — Windows ใช้ async_unbuffered เป็นค่าเริ่มต้นอยู่แล้ว
+#    ซึ่งถูกต้องแล้ว ไม่ต้องตั้งอะไรเพิ่ม
+
+innodb_flush_log_at_trx_commit = 2
+innodb_io_capacity      = 4000
+innodb_io_capacity_max  = 10000
+innodb_read_io_threads  = 8
+innodb_write_io_threads = 8
+
+# ── Slow query log (พาธแบบ Windows) ────────────
+slow_query_log      = 1
+slow_query_log_file = "C:/mariadb-logs/slow.log"
+long_query_time     = 0.15
+log_queries_not_using_indexes = 1
+
+# ── Charset ────────────────────────────────────
+character-set-server = utf8mb4
+collation-server     = utf8mb4_unicode_ci
+```
+
+```powershell
+mkdir C:\mariadb-logs -Force
+net stop MariaDB
+net start MariaDB
+```
+
+##### W-4 🔒 Firewall — ขั้นตอนที่สำคัญที่สุดของฝั่ง Windows
+
+เพราะ `bind-address = 0.0.0.0` ทำให้ MariaDB ฟังทุกอินเทอร์เฟซรวมถึง IP สาธารณะ
+**Firewall คือด่านเดียวที่กันอินเทอร์เน็ตออกจากพอร์ต 3306** — ห้ามข้ามขั้นนี้เด็ดขาด
+
+```powershell
+# 1) บล็อก 3306 จากทุกที่ก่อน (กฎ Block ชนะ Allow เสมอใน Windows Firewall
+#    ดังนั้นต้องระบุ RemoteAddress ในกฎ Block ให้เป็นเฉพาะสิ่งที่ต้องการบล็อก)
+New-NetFirewallRule -DisplayName "MariaDB - block public" -Direction Inbound `
+  -Protocol TCP -LocalPort 3306 -RemoteAddress Any -Action Block
+
+# 2) อนุญาตเฉพาะ i9 ผ่าน WireGuard เท่านั้น
+New-NetFirewallRule -DisplayName "MariaDB - allow i9 via wg" -Direction Inbound `
+  -Protocol TCP -LocalPort 3306 -RemoteAddress 10.66.0.2 -Action Allow
+```
+
+> ⚠️ Windows Firewall ให้ **Block ชนะ Allow** ถ้ากฎทับซ้อนกัน
+> ดังนั้นถ้าใส่กฎ Block แบบ `-RemoteAddress Any` มันจะบล็อก `10.66.0.2` ไปด้วย
+> **วิธีที่ถูกต้องกว่า** คือไม่ต้องสร้างกฎ Block เลย — ให้พึ่ง default policy ของ Windows
+> (ขาเข้าที่ไม่มีกฎ Allow จะถูกบล็อกอยู่แล้ว) แล้วสร้างเฉพาะกฎ Allow ข้อ 2 พอ:
+
+```powershell
+# ✅ วิธีที่แนะนำ — สร้างแค่กฎเดียว
+Remove-NetFirewallRule -DisplayName "MariaDB - block public" -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName "MariaDB - allow i9 via wg" -Direction Inbound `
+  -Protocol TCP -LocalPort 3306 -RemoteAddress 10.66.0.2 -Action Allow
+
+# ตรวจว่า Firewall เปิดใช้งานอยู่จริงทุกโปรไฟล์ (ถ้า Off = 3306 โล่งสู่อินเทอร์เน็ต!)
+Get-NetFirewallProfile | Select-Object Name, Enabled
+```
+
+**ตรวจสอบจากภายนอกว่าปิดสนิทจริง** — รันจากเครื่องอื่นที่ไม่ใช่ i9:
+
+```bash
+nc -zv -w3 <IP_สาธารณะ_i5> 3306
+# ต้องได้ timeout / refused เท่านั้น ถ้าต่อติด = Firewall ยังไม่ปิด ให้แก้ทันที
+```
+
+##### W-5 สำรองข้อมูลด้วย Task Scheduler (แทน cron)
+
+สร้าง `C:\scripts\db-backup.ps1`:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$Bin   = "C:\Program Files\MariaDB 11.4\bin"
+$Dest  = "D:\backup\mariadb"
+$Stamp = Get-Date -Format 'yyyy-MM-dd_HHmm'
+New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+
+& "$Bin\mariadb-dump.exe" --defaults-file="C:\scripts\backup.cnf" `
+    --single-transaction --routines --triggers --events `
+    --hex-blob --default-character-set=utf8mb4 `
+    es_extended | Out-File -Encoding utf8 "$Dest\es_extended_$Stamp.sql"
+
+Compress-Archive -Path "$Dest\es_extended_$Stamp.sql" `
+                 -DestinationPath "$Dest\es_extended_$Stamp.zip" -Force
+Remove-Item "$Dest\es_extended_$Stamp.sql"
+
+# เก็บย้อนหลัง 14 วัน
+Get-ChildItem $Dest -Filter *.zip |
+  Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-14) } |
+  Remove-Item -Force
+```
+
+เก็บรหัสผ่านไว้ในไฟล์แยก `C:\scripts\backup.cnf` (อย่าใส่ในสคริปต์):
+
+```ini
+[client]
+user=root
+password=รหัสผ่าน_root
+```
+
+```powershell
+# จำกัดสิทธิ์ไฟล์รหัสผ่านให้เฉพาะ Administrators
+icacls C:\scripts\backup.cnf /inheritance:r /grant:r "Administrators:(R)"
+
+# ตั้งให้รันทุกวันตี 5
+$A = New-ScheduledTaskAction -Execute 'powershell.exe' `
+       -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\scripts\db-backup.ps1'
+$T = New-ScheduledTaskTrigger -Daily -At 5:00am
+Register-ScheduledTask -TaskName 'MariaDB Backup' -Action $A -Trigger $T `
+       -User 'SYSTEM' -RunLevel Highest
+```
+
+> 🔴 ทดลอง restore ลง DB ชื่ออื่นอย่างน้อยเดือนละครั้ง — backup ที่ไม่เคยลอง restore = ไม่มี backup
 
 ---
 
